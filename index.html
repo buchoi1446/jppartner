@@ -295,13 +295,16 @@ footer{
     </div>
     <nav class="tabs" id="tabs" role="tablist"></nav>
     <div class="playbar" id="playbar">
-      <button class="pb-btn" id="pbPlay" aria-label="연속 재생">
-        <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg><span id="pbPlayLabel">이어 듣기</span>
+      <button class="pb-btn" id="pbAll" aria-label="전체 연속 재생">
+        <svg viewBox="0 0 24 24"><path d="M4 5v14l8-7zM13 5v14l8-7z"/></svg><span>전체 듣기</span>
+      </button>
+      <button class="pb-btn ghost" id="pbPlay" aria-label="이 장 연속 재생">
+        <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg><span id="pbPlayLabel">이 장 듣기</span>
       </button>
       <button class="pb-btn ghost" id="pbStop" disabled aria-label="정지">
         <svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>정지
       </button>
-      <span class="pb-status" id="pbStatus">현재 화면의 문장을 처음부터 이어서 재생합니다</span>
+      <span class="pb-status" id="pbStatus">전체 또는 현재 장의 문장을 이어서 재생합니다</span>
     </div>
   </div>
 </div>
@@ -359,49 +362,60 @@ function speak(text, card){
 }
 
 /* ---- continuous play engine ---- */
-let playSeq=[];          // [{jp, card}] in render order
+let playSeq=[];          // [{jp, card}] in render order for the CURRENT rendered chapter
 let chainOn=false;
 let chainIdx=-1;
 let chainPaused=false;
+let allMode=false;       // true = playing across all chapters
 
 function resetPlayUI(){
-  chainOn=false;chainPaused=false;chainIdx=-1;
+  chainOn=false;chainPaused=false;chainIdx=-1;allMode=false;
   const pb=document.getElementById("playbar");
-  const btn=document.getElementById("pbPlay");
   const lbl=document.getElementById("pbPlayLabel");
   const stop=document.getElementById("pbStop");
   const st=document.getElementById("pbStatus");
+  const allBtn=document.getElementById("pbAll");
   if(!pb) return;
   pb.classList.remove("active");
-  lbl.textContent="이어 듣기";
-  btn.querySelector("path").setAttribute("d","M8 5v14l11-7z"); // play icon
+  lbl.textContent="이 장 듣기";
+  document.querySelector("#pbPlay path").setAttribute("d","M8 5v14l11-7z");
+  allBtn.querySelector("path").setAttribute("d","M4 5v14l8-7zM13 5v14l8-7z");
+  allBtn.querySelector("span").textContent="전체 듣기";
   stop.disabled=true;
-  st.textContent="현재 화면의 문장을 처음부터 이어서 재생합니다";
+  st.textContent="전체 또는 현재 장의 문장을 이어서 재생합니다";
 }
 
 function setPlayingIcon(playing){
-  const btn=document.getElementById("pbPlay");
-  const lbl=document.getElementById("pbPlayLabel");
-  if(playing){
-    lbl.textContent="일시정지";
-    btn.querySelector("path").setAttribute("d","M6 5h4v14H6zM14 5h4v14h-4z"); // pause icon
+  // reflect state on whichever button is active
+  const single=document.querySelector("#pbPlay path");
+  const sLbl=document.getElementById("pbPlayLabel");
+  const allBtn=document.getElementById("pbAll");
+  const aPath=allBtn.querySelector("path");
+  const aSpan=allBtn.querySelector("span");
+  const pauseD="M6 5h4v14H6zM14 5h4v14h-4z";
+  if(allMode){
+    if(playing){aPath.setAttribute("d",pauseD);aSpan.textContent="일시정지";}
+    else{aPath.setAttribute("d","M4 5v14l8-7zM13 5v14l8-7z");aSpan.textContent="이어 재생";}
+    // single button back to default
+    single.setAttribute("d","M8 5v14l11-7z");sLbl.textContent="이 장 듣기";
   }else{
-    lbl.textContent="이어 재생";
-    btn.querySelector("path").setAttribute("d","M8 5v14l11-7z"); // play icon
+    if(playing){single.setAttribute("d",pauseD);sLbl.textContent="일시정지";}
+    else{single.setAttribute("d","M8 5v14l11-7z");sLbl.textContent="이어 재생";}
+    aPath.setAttribute("d","M4 5v14l8-7zM13 5v14l8-7z");aSpan.textContent="전체 듣기";
   }
 }
 
 function chainStatus(){
   const st=document.getElementById("pbStatus");
-  if(!st) return;
-  if(chainIdx>=0 && chainIdx<playSeq.length){
-    st.innerHTML="재생 중 <b>"+(chainIdx+1)+" / "+playSeq.length+"</b> · "+esc(playSeq[chainIdx].jp.slice(0,18))+"…";
-  }
+  if(!st||chainIdx<0||chainIdx>=playSeq.length) return;
+  const chTag = allMode ? ("[전체 "+(activeChapter+1)+"/"+DATA.length+"장] ") : "";
+  st.innerHTML=chTag+"재생 중 <b>"+(chainIdx+1)+" / "+playSeq.length+"</b> · "+esc(playSeq[chainIdx].jp.slice(0,16))+"…";
 }
 
+// start within the currently rendered chapter
 function startChain(fromIdx){
   if(!("speechSynthesis" in window) || !playSeq.length) return;
-  stopChain(true);
+  speechSynthesis.cancel();
   chainOn=true;chainPaused=false;
   chainIdx=fromIdx||0;
   document.getElementById("playbar").classList.add("active");
@@ -410,16 +424,45 @@ function startChain(fromIdx){
   playChainStep();
 }
 
+// start playing all chapters from chapter 0
+function startAll(){
+  if(!("speechSynthesis" in window)) return;
+  stopChain(true);
+  allMode=true;
+  activeChapter=0;
+  document.getElementById("search").value="";query="";
+  updateTabs();
+  render();                 // renders chapter 0, rebuilds playSeq
+  // render() calls resetPlayUI which clears allMode -> set again after
+  allMode=true;
+  startChain(0);
+}
+
 function playChainStep(){
   if(!chainOn || chainPaused) return;
-  if(chainIdx>=playSeq.length){ // finished
+  if(chainIdx>=playSeq.length){ // current chapter finished
+    if(allMode && activeChapter < DATA.length-1){
+      // advance to next chapter
+      activeChapter++;
+      updateTabs();
+      const keepAll=true;
+      render();             // rebuilds playSeq for new chapter (and resets UI)
+      allMode=keepAll;chainOn=true;chainPaused=false;chainIdx=0;
+      document.getElementById("playbar").classList.add("active");
+      document.getElementById("pbStop").disabled=false;
+      setPlayingIcon(true);
+      window.scrollTo({top:0,behavior:"smooth"});
+      setTimeout(playChainStep,500);
+      return;
+    }
+    // all done
+    const wasAll=allMode;
     resetPlayUI();
     const st=document.getElementById("pbStatus");
-    if(st) st.textContent="재생 완료";
+    if(st) st.textContent= wasAll ? "전체 재생 완료" : "이 장 재생 완료";
     return;
   }
   const {jp,card}=playSeq[chainIdx];
-  // clear previous highlight
   playSeq.forEach(p=>p.card.classList.remove("playing"));
   card.classList.add("playing");
   card.scrollIntoView({behavior:"smooth",block:"center"});
@@ -432,7 +475,6 @@ function playChainStep(){
     card.classList.remove("playing");
     if(!chainOn || chainPaused) return;
     chainIdx++;
-    // small gap between sentences
     setTimeout(playChainStep,350);
   };
   u.onerror=()=>{
@@ -462,28 +504,38 @@ function resumeChain(){
 }
 
 function stopChain(silent){
-  chainOn=false;chainPaused=false;
+  chainOn=false;chainPaused=false;allMode=false;
   if("speechSynthesis" in window) speechSynthesis.cancel();
   playSeq.forEach(p=>p.card&&p.card.classList.remove("playing"));
   if(!silent) resetPlayUI();
 }
 
-/* play/pause toggle button */
-document.addEventListener("DOMContentLoaded",()=>{});
 function bindPlaybar(){
+  const all=document.getElementById("pbAll");
   const play=document.getElementById("pbPlay");
   const stop=document.getElementById("pbStop");
   if(!play) return;
+
+  // 전체 듣기 button
+  all.onclick=()=>{
+    if(allMode && chainOn && !chainPaused){ pauseChain(); return; }   // playing -> pause
+    if(allMode && chainPaused){ resumeChain(); return; }              // paused -> resume
+    startAll();                                                       // fresh start
+  };
+
+  // 이 장 듣기 button
   play.onclick=()=>{
-    if(!chainOn){                 // not playing -> start from top (or resume if paused mid)
+    if(allMode){ stopChain(); }   // switching from all-mode: reset first
+    if(!chainOn){
       if(chainPaused && chainIdx>=0) resumeChain();
       else startChain(0);
-    }else if(chainPaused){        // paused -> resume
+    }else if(chainPaused){
       resumeChain();
-    }else{                        // playing -> pause
+    }else{
       pauseChain();
     }
   };
+
   stop.onclick=()=>stopChain();
 }
 
@@ -510,7 +562,7 @@ const PLAY_SVG='<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11
 
 /* ---- render ---- */
 function render(){
-  stopChain();
+  if(!allMode) stopChain();   // in all-mode the chapter transition keeps playing
   playSeq=[];
   const main=document.getElementById("main");
   // keep warn node
@@ -578,11 +630,11 @@ function render(){
     main.appendChild(e);
   }
 
-  // wire chapter-level play buttons
+  // wire chapter-level play buttons (this chapter only)
   main.querySelectorAll("[data-chplay]").forEach(b=>{
-    b.onclick=()=>startChain(0); // single chapter is rendered, so play from first
+    b.onclick=()=>{allMode=false;startChain(0);};
   });
-  resetPlayUI();
+  if(!allMode) resetPlayUI();   // keep playing UI intact during all-mode transition
 }
 
 /* ---- tabs ---- */
