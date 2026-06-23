@@ -289,6 +289,8 @@ footer{
     <div class="toolbar">
       <span class="toggle" id="t-reading" role="button" aria-pressed="true" tabindex="0">독음</span>
       <span class="toggle" id="t-kr" role="button" aria-pressed="true" tabindex="0">한국어 뜻</span>
+      <span class="toggle" id="t-repeat" role="button" tabindex="0" aria-pressed="false" title="각 문장을 여러 번 반복">반복 ×1</span>
+      <span class="toggle" id="t-wake" role="button" tabindex="0" aria-pressed="false" title="재생 중 화면 꺼짐 방지">🔆 화면 유지</span>
       <span class="spacer"></span>
       <span class="rate-label">읽기 속도</span>
       <input id="rate" type="range" min="0.6" max="1.1" step="0.05" value="0.85" style="width:80px">
@@ -367,6 +369,8 @@ let chainOn=false;
 let chainIdx=-1;
 let chainPaused=false;
 let allMode=false;       // true = playing across all chapters
+let repeatCount=1;       // times to read each sentence (1,2,3)
+let repeatLeft=0;        // remaining reads for current sentence
 
 function resetPlayUI(){
   chainOn=false;chainPaused=false;chainIdx=-1;allMode=false;
@@ -409,7 +413,8 @@ function chainStatus(){
   const st=document.getElementById("pbStatus");
   if(!st||chainIdx<0||chainIdx>=playSeq.length) return;
   const chTag = allMode ? ("[전체 "+(activeChapter+1)+"/"+DATA.length+"장] ") : "";
-  st.innerHTML=chTag+"재생 중 <b>"+(chainIdx+1)+" / "+playSeq.length+"</b> · "+esc(playSeq[chainIdx].jp.slice(0,16))+"…";
+  const rptTag = repeatCount>1 ? (" <span style='color:var(--shu-deep)'>("+(repeatCount-repeatLeft+1)+"/"+repeatCount+"회)</span>") : "";
+  st.innerHTML=chTag+"재생 중 <b>"+(chainIdx+1)+" / "+playSeq.length+"</b>"+rptTag+" · "+esc(playSeq[chainIdx].jp.slice(0,14))+"…";
 }
 
 // start within the currently rendered chapter
@@ -418,6 +423,8 @@ function startChain(fromIdx){
   speechSynthesis.cancel();
   chainOn=true;chainPaused=false;
   chainIdx=fromIdx||0;
+  repeatLeft=repeatCount;
+  requestWakeLock();
   document.getElementById("playbar").classList.add("active");
   document.getElementById("pbStop").disabled=false;
   setPlayingIcon(true);
@@ -447,7 +454,7 @@ function playChainStep(){
       updateTabs();
       const keepAll=true;
       render();             // rebuilds playSeq for new chapter (and resets UI)
-      allMode=keepAll;chainOn=true;chainPaused=false;chainIdx=0;
+      allMode=keepAll;chainOn=true;chainPaused=false;chainIdx=0;repeatLeft=repeatCount;
       document.getElementById("playbar").classList.add("active");
       document.getElementById("pbStop").disabled=false;
       setPlayingIcon(true);
@@ -467,20 +474,30 @@ function playChainStep(){
   card.classList.add("playing");
   card.scrollIntoView({behavior:"smooth",block:"center"});
   chainStatus();
+  // how many times to read this sentence
+  if(repeatLeft<=0) repeatLeft=repeatCount;
   const u=new SpeechSynthesisUtterance(jp);
   u.lang="ja-JP";
   if(jpVoice) u.voice=jpVoice;
   u.rate=parseFloat(document.getElementById("rate").value);
   u.onend=()=>{
-    card.classList.remove("playing");
     if(!chainOn || chainPaused) return;
-    chainIdx++;
-    setTimeout(playChainStep,350);
+    repeatLeft--;
+    if(repeatLeft>0){
+      chainStatus();
+      setTimeout(playChainStep,300);   // repeat same sentence
+    }else{
+      card.classList.remove("playing");
+      chainIdx++;
+      repeatLeft=repeatCount;
+      setTimeout(playChainStep,350);   // next sentence
+    }
   };
   u.onerror=()=>{
-    card.classList.remove("playing");
     if(!chainOn || chainPaused) return;
+    card.classList.remove("playing");
     chainIdx++;
+    repeatLeft=repeatCount;
     setTimeout(playChainStep,200);
   };
   speechSynthesis.speak(u);
@@ -497,6 +514,7 @@ function pauseChain(){
 function resumeChain(){
   if(chainIdx<0) chainIdx=0;
   chainPaused=false;chainOn=true;
+  requestWakeLock();
   document.getElementById("playbar").classList.add("active");
   document.getElementById("pbStop").disabled=false;
   setPlayingIcon(true);
@@ -507,8 +525,31 @@ function stopChain(silent){
   chainOn=false;chainPaused=false;allMode=false;
   if("speechSynthesis" in window) speechSynthesis.cancel();
   playSeq.forEach(p=>p.card&&p.card.classList.remove("playing"));
+  releaseWakeLock();
   if(!silent) resetPlayUI();
 }
+
+/* ---- screen wake lock (keep screen on while playing) ---- */
+let wakeLock=null;
+let wakeWanted=false;  // user enabled "화면 유지"
+async function requestWakeLock(){
+  if(!wakeWanted) return;
+  try{
+    if("wakeLock" in navigator){
+      wakeLock=await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release",()=>{});
+    }
+  }catch(e){/* denied or unsupported */}
+}
+function releaseWakeLock(){
+  try{ if(wakeLock){wakeLock.release();wakeLock=null;} }catch(e){}
+}
+// re-acquire if user returns to the tab while still playing
+document.addEventListener("visibilitychange",()=>{
+  if(document.visibilityState==="visible" && chainOn && !chainPaused && wakeWanted){
+    requestWakeLock();
+  }
+});
 
 function bindPlaybar(){
   const all=document.getElementById("pbAll");
@@ -667,6 +708,35 @@ function setupToggle(id, cls){
 }
 setupToggle("t-reading","hide-reading");
 setupToggle("t-kr","hide-kr");
+
+/* repeat-count toggle: cycles 1 -> 2 -> 3 -> 1 */
+(function(){
+  const el=document.getElementById("t-repeat");
+  function apply(){
+    el.textContent="반복 ×"+repeatCount;
+    el.setAttribute("aria-pressed", repeatCount>1?"true":"false");
+    if(repeatLeft>repeatCount) repeatLeft=repeatCount;
+  }
+  el.onclick=()=>{ repeatCount = repeatCount>=3 ? 1 : repeatCount+1; apply(); };
+  el.onkeydown=(e)=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();el.click();}};
+  apply();
+})();
+
+/* wake-lock toggle: keep screen on during playback */
+(function(){
+  const el=document.getElementById("t-wake");
+  if(!("wakeLock" in navigator)){
+    el.style.display="none"; // unsupported browser: hide
+    return;
+  }
+  el.onclick=()=>{
+    wakeWanted=!wakeWanted;
+    el.setAttribute("aria-pressed", wakeWanted?"true":"false");
+    if(wakeWanted && chainOn && !chainPaused) requestWakeLock();
+    if(!wakeWanted) releaseWakeLock();
+  };
+  el.onkeydown=(e)=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();el.click();}};
+})();
 
 /* ---- search ---- */
 let deb;
