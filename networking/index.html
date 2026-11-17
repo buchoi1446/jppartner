@@ -57,9 +57,9 @@ main{padding:12px 12px 80px;max-width:760px;margin:0 auto}
 </div>
 </header>
 <div class="bar">
-<label>속도 <select id="rate"><option value="0.7">느리게</option><option value="0.85" selected>보통</option><option value="1">원어민</option></select></label>
+<label>속도 <select id="rate"><option value="0.75">느리게</option><option value="0.9" selected>보통</option><option value="1">원어민</option></select></label>
 <label>반복 <select id="rep"><option>1</option><option selected>2</option><option>3</option></select></label>
-<label>음성 <select id="voice" onchange="this.dataset.picked=this.value"></select></label>
+<label style="display:none">음성 <select id="voice" onchange="this.dataset.picked=this.value"></select></label>
 <button class="btn" id="mode">암기 모드</button>
 <button class="btn pri" id="all">▶ 전체 재생</button>
 <span class="prog" id="prog"></span>
@@ -180,7 +180,7 @@ function items(){
 }
 function render(){
   const m=$("#main");m.innerHTML="";
-  if(!synth){const w=document.createElement("div");w.className="warn";w.style.display="block";w.textContent="이 브라우저는 음성 재생을 지원하지 않습니다. Chrome 또는 Safari에서 열어 주세요.";m.appendChild(w)}
+  
   if(tab==="intro"){const t=document.createElement("div");t.className="tip";t.innerHTML="문장 단위로 끊어 놓았습니다. <b>전체 재생</b>으로 흐름을 듣고, 막히는 문장만 반복하세요. 숫자(16 years, 1,000 cases)와 LINE Plus, protect the name before you announce it에서 잠깐 쉬어 말하면 기억에 남습니다.";m.appendChild(t)}
   let n=0,total=0,dn=0;
   items().forEach(g=>{
@@ -198,13 +198,22 @@ function render(){
   $("#prog").textContent=`외움 ${dn}/${total}`;
 }
 
-function speak(text,cb){
+const player=new Audio();player.preload="auto";
+function tts(text,cb){
+  if(!synth){cb();return}
   const u=new SpeechSynthesisUtterance(text);
   const v=voices[+$("#voice").value];if(v)u.voice=v;u.lang=v?v.lang:"en-US";
   u.rate=+$("#rate").value;u.pitch=(v&&isMale(v))?1:0.8;u.onend=cb;u.onerror=cb;synth.speak(u);
 }
+function speak(card,cb){
+  let fired=false;const done=()=>{if(!fired){fired=true;cb()}};
+  const fb=()=>{if(!fired&&running){player.onended=null;player.onerror=null;tts(card.dataset.en,done)}};
+  player.onended=done;player.onerror=fb;
+  player.src="audio/"+card.dataset.id+".mp3";
+  player.playbackRate=+$("#rate").value;
+  const p=player.play();if(p&&p.catch)p.catch(fb);
+}
 function playList(cards){
-  if(!synth)return;
   const rep=+$("#rep").value;queue=[];cards.forEach(c=>{for(let r=0;r<rep;r++)queue.push(c)});
   qi=0;running=true;$("#float").style.display="flex";next();
 }
@@ -214,10 +223,10 @@ function next(){
   const c=queue[qi++];c.classList.add("playing");
   c.scrollIntoView({block:"center",behavior:"smooth"});
   $("#ftxt").textContent=`재생 중 ${qi}/${queue.length}`;
-  speak(c.dataset.en,()=>setTimeout(next,running?900:0));
+  speak(c,()=>setTimeout(next,running?900:0));
 }
 function stopAll(){
-  running=false;if(synth)synth.cancel();
+  running=false;player.onended=null;player.onerror=null;player.pause();if(synth)synth.cancel();
   $("#float").style.display="none";
   document.querySelectorAll(".card.playing").forEach(c=>c.classList.remove("playing"));
 }
